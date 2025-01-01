@@ -40,15 +40,37 @@ typedef enum {
     FTH_OP_DIV
 } fth_op;
 
+typedef enum {
+    FTH_TOKEN_ERROR,
+    FTH_TOKEN_ATOM,
+    FTH_TOKEN_STRING,
+    FTH_TOKEN_NUMBER,
+    FTH_TOKEN_INTEGER,
+    FTH_TOKEN_EOF
+} fth_token_t;
+
+typedef struct {
+    fth_token_t type;
+    const char *begin;
+    int length;
+    int line;
+} fth_token;
+
+typedef struct {
+    const char *begin;
+    const char *cursor;
+    int line;
+} fth_parser;
+
 void fth_init(fth_vm *vm);
 void fth_deinit(fth_vm *vm);
 
 void fth_push(fth_vm *vm, fth_value value);
 fth_value fth_pop(fth_vm *vm);
 
-fth_result_t rth_interpret(fth_vm *vm, fth_chunk *chunk);
-void fth_compile(const char *src, fth_chunk *chunk);
+fth_result_t fth_interpret(fth_vm *vm, const char *source);
 fth_result_t fth_run(fth_vm *vm);
+fth_result_t fth_run_file(fth_vm *vm, const char *path);
 
 #ifdef __cplusplus
 }
@@ -229,6 +251,7 @@ static void stack_reset(fth_vm *vm) {
 }
 
 void fth_init(fth_vm *vm) {
+    memset(vm, 0, sizeof(fth_vm));
     stack_reset(vm);
 }
 
@@ -246,14 +269,280 @@ fth_value fth_pop(fth_vm *vm) {
     return result;
 }
 
-fth_result_t fth_interpret(fth_vm *vm, fth_chunk *chunk) {
-    vm->chunk = chunk;
-    vm->pc = vm->chunk->data;
-    return fth_run(vm);
+static fth_token fth_token_make(fth_parser *parser, fth_token_t type) {
+    return (fth_token) {
+        .type = type,
+        .begin = parser->begin,
+        .length = (int)(parser->cursor - parser->begin),
+        .line = parser->line
+    };
 }
 
-void fth_compile(const char *src, fth_chunk *chunk) {
+static fth_token fth_token_error(fth_parser *parser, const char *message) {
+    return (fth_token) {
+        .type = FTH_TOKEN_ERROR,
+        .begin = strdup(message),
+        .length = (int)strlen(message),
+        .line = parser->line
+    };
+}
+
+static char* _vsprintf(const char *format, size_t *size, va_list args) {
+    va_list _copy;
+    va_copy(_copy, args);
+    size_t _size = vsnprintf(NULL, 0, format, args);
+    va_end(_copy);
+    char *result = malloc(_size + 1);
+    if (!result)
+        return NULL;
+    vsnprintf(result, _size, format, args);
+    result[_size] = '\0';
+    if (size)
+        *size = _size;
+    return result;
+}
+
+static inline fth_token fth_token_error_va(fth_parser *parser, const char *message, ...) {
+    va_list args;
+    va_start(args, message);
+    size_t length;
+    char* result = _vsprintf(message, &length, args);
+    va_end(args);
+    return (fth_token) {
+        .type = FTH_TOKEN_ERROR,
+        .begin = result,
+        .length = (int)length,
+        .line = parser->line
+    };
+}
+
+static inline void update_start(fth_parser *parser) {
+    parser->begin = parser->cursor;
+}
+
+static inline char peek(fth_parser *parser) {
+    return *parser->cursor;
+}
+
+static inline int is_eof(fth_parser *parser) {
+    return peek(parser) == '\0';
+}
+
+static inline char advance(fth_parser *parser) {
+    parser->cursor++;
+    char c = parser->cursor[-1];
+    if (c == '\n')
+        parser->line++;
+    return c;
+}
+
+#define ADVANCE(N) \
+    do { \
+        for (int i = 0; i < (N); i++) \
+            advance(parser); \
+    } while(0)
+
+static inline char next(fth_parser *parser) {
+    return is_eof(parser) ? '\0' : parser->cursor[1];
+}
+
+static inline int match(fth_parser *parser, const char *str) {
+    return strncmp(parser->cursor, str, strlen(str));
+}
+
+static void skip_line(fth_parser *parser) {
+    for (;;) {
+        if (is_eof(parser))
+            return;
+        switch (peek(parser)) {
+            case '\r':
+                switch (next(parser)) {
+                    case '\n':
+                        advance(parser);
+                    case '\0':
+                        advance(parser);
+                        return;
+                    default:
+                        break;
+                }
+                break;
+            case '\n':
+                advance(parser);
+                return;
+        }
+        advance(parser);
+    }
+}
+
+static void skip_whitespace(fth_parser *parser) {
+    for (;;) {
+        if (is_eof(parser))
+            return;
+        switch (peek(parser)) {
+            case '#':
+                skip_line(parser);
+                break;
+            case ' ':
+            case '\t':
+            case '\v':
+            case '\r':
+            case '\n':
+            case '\f':
+                advance(parser);
+                break;
+            default:
+                return;
+        }
+    }
+}
+
+static inline int upcase(char c) {
+    return c >= 'a' && c <= 'z' ? c - 32 : c;
+}
+
+int strncmp_upcase(const char *s1, const char *s2, size_t n) {
+    if (!s1 || !s2 || !n)
+        return -1;
+    register unsigned char u1, u2;
+    while (n-- > 0) {
+        u1 = (unsigned char)*s1++;
+        u2 = (unsigned char)*s2++;
+        if (upcase(u1) != upcase(u2))
+            return u1 - u2;
+        if (u1 == '\0')
+            return 0;
+    }
+    return 0;
+}
+
+static fth_token symbol_token(fth_parser *parser) {
+    for (;;) {
+        if (is_eof(parser))
+            break;
+        switch (peek(parser)) {
+            case 'a' ... 'z':
+            case '?' ... 'Z':
+            case '_':
+            case '0' ... '9':
+                advance(parser);
+                break;
+            default:
+                goto BREAK;
+        }
+    }
+BREAK:
+    return fth_token_make(parser, FTH_TOKEN_ATOM);
+}
+
+static fth_token number_token(fth_parser *parser) {
+    int is_float = 0;
+    for (;;) {
+        if (is_eof(parser))
+            break;
+        switch (peek(parser)) {
+            case '0' ... '9':
+                advance(parser);
+                break;
+            case '.':
+                if (is_float)
+                    return fth_token_error(parser, "multiple decimal place marking");
+                is_float = 1;
+                advance(parser);
+                break;
+            default:
+                goto DONE;
+        }
+        
+    }
+DONE:
+    return fth_token_make(parser, is_float ? FTH_TOKEN_NUMBER : FTH_TOKEN_INTEGER);
+}
+
+static fth_token string_token(fth_parser *parser) {
+    advance(parser); // skip first "
+    update_start(parser);
+    for (;;) {
+        if (is_eof(parser))
+            return fth_token_error(parser, "unterminated string"); // unterminated string
+        switch (peek(parser)) {
+            case '"':;
+                fth_token token = fth_token_make(parser, FTH_TOKEN_STRING);
+                advance(parser);
+                return token;
+            default:
+                advance(parser);
+        }
+    }
+}
+
+static fth_token next_token(fth_parser *parser) {
+    skip_whitespace(parser);
+    update_start(parser);
+    if (is_eof(parser))
+        return fth_token_make(parser, FTH_TOKEN_EOF);
+    switch (peek(parser)) {
+        case '#':
+            skip_line(parser);
+            break;
+        case 'a' ... 'z':
+        case '?' ... 'Z':
+        case '_':
+            return symbol_token(parser);
+        case '0' ... '9':
+            return number_token(parser);
+        case '"':
+            return string_token(parser);
+        default:
+            break;
+    }
+    return fth_token_error(parser, "unknown token");
+}
+
+static const char* token_string(fth_token_t type) {
+    switch (type) {
+        case FTH_TOKEN_ATOM:
+            return "ATOM";
+        case FTH_TOKEN_STRING:
+            return "STRING";
+        case FTH_TOKEN_NUMBER:
+            return "NUMBER";
+        case FTH_TOKEN_INTEGER:
+            return "INTEGER";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static inline void print_token(fth_token *token) {
+    printf("%s: %.*s\n", token_string(token->type), token->length, token->begin);
+}
+
+static void fth_compile(const char *src, fth_chunk *chunk) {
+    fth_parser parser = {
+        .begin = src,
+        .cursor = src,
+        .line = 1
+    };
     
+    int line = -1;
+    for (;;) {
+        fth_token token = next_token(&parser);
+        switch (token.type) {
+            case FTH_TOKEN_ERROR:
+                printf("%s\n", token.begin);
+                free((void*)token.begin);
+            case FTH_TOKEN_EOF:
+                return;
+            default:
+                print_token(&token);
+        }
+    }
+}
+
+
+fth_result_t fth_interpret(fth_vm *vm, const char *source) {
+    fth_compile(source, vm->chunk);
+    return FTH_OK;
 }
 
 #define BINARY_OP(vm, op) \
@@ -290,5 +579,48 @@ fth_result_t fth_run(fth_vm *vm) {
                 abort();
         }
     }
+}
+
+static char* readfile(const char *path, size_t *size) {
+    char *result = NULL;
+    size_t _size = 0;
+    FILE *file = fopen(path, "r");
+    if (!file)
+        goto BAIL; // _size = 0 failed to open file
+    fseek(file, 0, SEEK_END);
+    _size = ftell(file);
+    rewind(file);
+    if (!(result = malloc(sizeof(char) * _size + 1)))
+        goto BAIL; // _size > 0 failed to alloc memory
+    if (fread(result, sizeof(char), _size, file) != _size) {
+        free(result);
+        _size = -1;
+        goto BAIL; // _size = -1 failed to read file
+    }
+    result[_size] = '\0';
+BAIL:
+    if (size)
+        *size = _size;
+    return result;
+}
+
+fth_result_t fth_run_file(fth_vm *vm, const char *path) {
+    size_t size;
+    char *source = readfile(path, &size);
+    if (!source)
+        switch (size) {
+            case 0:
+                fprintf(stderr, "failed to open '%s'\n", path);
+                return FTH_COMPILE_ERROR;
+            case -1:
+                fprintf(stderr, "failed to read '%s'\n", path);
+                return FTH_COMPILE_ERROR;
+            default:
+                fprintf(stderr, "failed to alloc memory '%zub'\n", size);
+                return FTH_COMPILE_ERROR;
+        }
+    fth_result_t result = fth_interpret(vm, source);
+    free(source);
+    return result;
 }
 #endif //FTH_IMPL
