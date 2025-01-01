@@ -31,9 +31,7 @@ int main(int argc, const char *argv[]) {
         case 2:;
             fth_vm vm;
             fth_init(&vm);
-            fth_chunk chunk;
-            vm.chunk = &chunk;
-            switch(fth_run_file(&vm, argv[1])) {
+            switch(fth_interpret_file(&vm, argv[1])) {
                 case FTH_OK:
                     printf(" OK");
                     break;

@@ -6,21 +6,14 @@ extern "C" {
 #include <stdint.h>
 
 typedef double fth_value;
-
-typedef struct {
-    int offset, line;
-} fth_chunk_linestart;
-
-typedef struct {
-    uint8_t *data;
-    fth_value *constants;
-    fth_chunk_linestart *lines;
-} fth_chunk;
+typedef struct fth_chunk fth_chunk;
 
 typedef struct {
     fth_chunk *chunk;
     uint8_t *pc;
     fth_value *stack;
+    fth_value current;
+    fth_value previous;
 } fth_vm;
 
 typedef enum {
@@ -29,39 +22,6 @@ typedef enum {
     FTH_RUNTIME_ERROR
 } fth_result_t;
 
-typedef enum {
-    FTH_OP_RETURN,
-    FTH_OP_CONSTANT,
-    FTH_OP_CONSTANT_LONG,
-    FTH_OP_NEGATE,
-    FTH_OP_ADD,
-    FTH_OP_SUB,
-    FTH_OP_MUL,
-    FTH_OP_DIV
-} fth_op;
-
-typedef enum {
-    FTH_TOKEN_ERROR,
-    FTH_TOKEN_ATOM,
-    FTH_TOKEN_STRING,
-    FTH_TOKEN_NUMBER,
-    FTH_TOKEN_INTEGER,
-    FTH_TOKEN_EOF
-} fth_token_t;
-
-typedef struct {
-    fth_token_t type;
-    const char *begin;
-    int length;
-    int line;
-} fth_token;
-
-typedef struct {
-    const char *begin;
-    const char *cursor;
-    int line;
-} fth_parser;
-
 void fth_init(fth_vm *vm);
 void fth_deinit(fth_vm *vm);
 
@@ -69,8 +29,7 @@ void fth_push(fth_vm *vm, fth_value value);
 fth_value fth_pop(fth_vm *vm);
 
 fth_result_t fth_interpret(fth_vm *vm, const char *source);
-fth_result_t fth_run(fth_vm *vm);
-fth_result_t fth_run_file(fth_vm *vm, const char *path);
+fth_result_t fth_interpret_file(fth_vm *vm, const char *path);
 
 #ifdef __cplusplus
 }
@@ -130,6 +89,65 @@ static void *__garry_shrinkf(void *arr, int itemsize) {
     }
     return NULL;
 }
+
+typedef struct {
+    int offset, line;
+} fth_chunk_linestart;
+
+struct fth_chunk {
+    uint8_t *data;
+    fth_value *constants;
+    fth_chunk_linestart *lines;
+};
+
+typedef enum {
+    FTH_OP_RETURN,
+    FTH_OP_CONSTANT,
+    FTH_OP_CONSTANT_LONG,
+    FTH_OP_NEGATE
+} fth_op;
+
+typedef enum {
+    FTH_TOKEN_ERROR,
+    FTH_TOKEN_EOF,
+    // literals
+    FTH_TOKEN_ATOM,
+    FTH_TOKEN_STRING,
+    FTH_TOKEN_NUMBER,
+    FTH_TOKEN_INTEGER,
+    // basic ops
+    FTH_TOKEN_COLON,
+    FTH_TOKEN_SEMICOLON,
+    FTH_TOKEN_NEGATIVE, // unary negate only
+    FTH_TOKEN_PERIOD,
+    FTH_TOKEN_LEFT_PAREN,
+    FTH_TOKEN_RIGHT_PAREN,
+    FTH_TOKEN_LEFT_SQR_PAREN,
+    FTH_TOKEN_RIGHT_SQR_PAREN,
+    FTH_TOKEN_LEFT_BRKT_PAREN,
+    FTH_TOKEN_RIGHT_BRKT_PAREN,
+    // long ops
+    FTH_TOKEN_NTH,
+    FTH_TOKEN_POP,  // >$
+    FTH_TOKEN_PUSH, //  $>
+    FTH_TOKEN_DUMP  // .$
+} fth_token_t;
+
+typedef struct {
+    fth_token_t type;
+    const char *begin;
+    int length;
+    int line;
+} fth_token;
+
+typedef struct {
+    const char *begin;
+    const char *cursor;
+    int line;
+    fth_token current;
+    fth_token previous;
+    int error;
+} fth_parser;
 
 static void chunk_init(fth_chunk *chunk) {
     chunk->data = NULL;
@@ -205,14 +223,6 @@ static int disassemble_instruction(fth_chunk *chunk, int offset) {
             return constant_instruction("OP_CONSTANT", chunk, offset);
         case FTH_OP_CONSTANT_LONG:
             return long_constant_instruction("OP_CONSTANT_LONG", chunk, offset);
-        case FTH_OP_ADD:
-            return simple_instruction("OP_ADD", offset);
-        case FTH_OP_SUB:
-            return simple_instruction("OP_SUB", offset);
-        case FTH_OP_MUL:
-            return simple_instruction("OP_MUL", offset);
-        case FTH_OP_DIV:
-            return simple_instruction("OP_DIV", offset);
         case FTH_OP_NEGATE:
             return simple_instruction("OP_NEGATE", offset);
         default:
@@ -400,7 +410,7 @@ static inline int upcase(char c) {
     return c >= 'a' && c <= 'z' ? c - 32 : c;
 }
 
-int strncmp_upcase(const char *s1, const char *s2, size_t n) {
+static int strncmp_upcase(const char *s1, const char *s2, size_t n) {
     if (!s1 || !s2 || !n)
         return -1;
     register unsigned char u1, u2;
@@ -492,8 +502,58 @@ static fth_token next_token(fth_parser *parser) {
             return number_token(parser);
         case '"':
             return string_token(parser);
-        default:
+#define PARENS \
+    X(PAREN, '(', ')') \
+    X(SQR_PAREN, '[', ']') \
+    X(BRKT_PAREN, '{', '}')
+#define X(T, O, C) \
+        case O: \
+            return fth_token_make(parser, FTH_TOKEN_LEFT_##T); \
+        case C: \
+            return fth_token_make(parser, FTH_TOKEN_RIGHT_##T);
+        PARENS
+#undef X
+        case ':':
+            return fth_token_make(parser, FTH_TOKEN_COLON);
+        case ';':
+            return fth_token_make(parser, FTH_TOKEN_SEMICOLON);
+        case '-':
+            switch (next(parser)) {
+                case '0' ... '9':
+                    return fth_token_make(parser, FTH_TOKEN_NEGATIVE);
+                default:
+                    return symbol_token(parser);
+            }
             break;
+        case '.':
+            switch (next(parser)) {
+                case '$':
+                    advance(parser);
+                    return fth_token_make(parser, FTH_TOKEN_DUMP);
+                default:
+                    return fth_token_make(parser, FTH_TOKEN_PERIOD);
+            }
+            break;
+        case '>':
+            switch (next(parser)) {
+                case '$':
+                    advance(parser);
+                    return fth_token_make(parser, FTH_TOKEN_POP);
+                default:
+                    return symbol_token(parser);
+            }
+        case '$':
+            switch (next(parser)) {
+                case '>':
+                    return fth_token_make(parser, FTH_TOKEN_PUSH);
+                    break;
+                    
+                default:
+                    break;
+            }
+            break;
+        default:
+            return fth_token_error(parser, "unknown token");
     }
     return fth_token_error(parser, "unknown token");
 }
@@ -517,7 +577,54 @@ static inline void print_token(fth_token *token) {
     printf("%s: %.*s\n", token_string(token->type), token->length, token->begin);
 }
 
-static void fth_compile(const char *src, fth_chunk *chunk) {
+static void consume(fth_parser *parser, fth_token_t type, const char *message) {
+    if (parser->current.type == type)
+        advance(parser);
+    else
+        parser->current = fth_token_error(parser, message);
+}
+
+static void emit(fth_parser *parser, fth_chunk *chunk, uint8_t byte) {
+    chunk_write(chunk, byte, parser->previous.line);
+}
+
+static void emit_op(fth_parser *parser, fth_chunk *chunk, uint8_t byte1, uint8_t byte2) {
+    emit(parser, chunk, byte1);
+    emit(parser, chunk, byte2);
+}
+
+static void emit_return(fth_parser *parser, fth_chunk *chunk) {
+    emit(parser, chunk, FTH_OP_RETURN);
+}
+
+static void emit_constant(fth_parser *parser, fth_chunk *chunk, fth_value value) {
+    chunk_write_constant(chunk, value, parser->previous.line);
+}
+
+static void emit_number(fth_parser *parser, fth_chunk *chunk) {
+    static char buf[513];
+    memset(buf, 0, sizeof(char) * 513);
+    if (parser->current.length >= 512)
+        abort();
+    memcpy(buf, parser->begin, parser->current.length);
+    buf[parser->current.length+1] = '\0';
+    double value = strtod(buf, NULL);
+    emit_constant(parser, chunk, value);
+}
+
+static void emit_integer(fth_parser *parser, fth_chunk *chunk) {
+    static char buf[21];
+    memset(buf, 0, sizeof(char) * 20);
+    if (parser->current.length >= 20)
+        abort();
+    memcpy(buf, parser->begin, parser->current.length);
+    buf[parser->current.length+1] = '\0';
+    char *end;
+    uint64_t value = strtoull(buf, &end, 10);
+    emit_constant(parser, chunk, value);
+}
+
+static int fth_compile(const char *src, fth_chunk *chunk) {
     fth_parser parser = {
         .begin = src,
         .cursor = src,
@@ -526,23 +633,57 @@ static void fth_compile(const char *src, fth_chunk *chunk) {
     
     int line = -1;
     for (;;) {
-        fth_token token = next_token(&parser);
-        switch (token.type) {
-            case FTH_TOKEN_ERROR:
-                printf("%s\n", token.begin);
-                free((void*)token.begin);
-            case FTH_TOKEN_EOF:
-                return;
+        parser.current = next_token(&parser);
+        switch (parser.current.type) {
             default:
-                print_token(&token);
+                parser.error = 1;
+                printf("unexpected token: %.*s\n", parser.current.length, parser.current.begin);
+                goto BAIL;
+            case FTH_TOKEN_ERROR:
+                parser.error = 1;
+                printf("%s\n", parser.current.begin);
+                free((void*)parser.current.begin);
+                goto BAIL;
+            case FTH_TOKEN_EOF:
+                emit(&parser, chunk, FTH_TOKEN_EOF);
+                goto BAIL;
+            case FTH_TOKEN_ATOM:
+                break;
+            case FTH_TOKEN_STRING:
+                break;
+            case FTH_TOKEN_NUMBER:
+                emit_number(&parser, chunk);
+                break;
+            case FTH_TOKEN_INTEGER:
+                emit_integer(&parser, chunk);
+                break;
+            case FTH_TOKEN_COLON:
+                break;
+            case FTH_TOKEN_SEMICOLON:
+                break;
+            case FTH_TOKEN_NEGATIVE:
+                break;
+            case FTH_TOKEN_PERIOD:
+                break;
+            case FTH_TOKEN_LEFT_PAREN:
+                break;
+            case FTH_TOKEN_LEFT_SQR_PAREN:
+                break;
+            case FTH_TOKEN_LEFT_BRKT_PAREN:
+                break;
+            case FTH_TOKEN_NTH:
+                break;
+            case FTH_TOKEN_POP:
+                break;
+            case FTH_TOKEN_PUSH:
+                break;
+            case FTH_TOKEN_DUMP:
+                break;
         }
+        parser.previous = parser.current;
     }
-}
-
-
-fth_result_t fth_interpret(fth_vm *vm, const char *source) {
-    fth_compile(source, vm->chunk);
-    return FTH_OK;
+BAIL:
+    return parser.error != 1;
 }
 
 #define BINARY_OP(vm, op) \
@@ -554,7 +695,7 @@ fth_result_t fth_interpret(fth_vm *vm, const char *source) {
 
 #define TAIL(vm) *(fth_value*)garry_last(vm->stack)
 
-fth_result_t fth_run(fth_vm *vm) {
+static fth_result_t fth_run(fth_vm *vm) {
     for (;;) {
         printf("          ");
         for (int i = 0; i < garry_count(vm->stack); i++)
@@ -570,15 +711,27 @@ fth_result_t fth_run(fth_vm *vm) {
             case FTH_OP_CONSTANT:
                 fth_push(vm, vm->chunk->constants[*vm->pc++]);
                 break;
-            case FTH_OP_ADD: BINARY_OP(vm, +); break;
-            case FTH_OP_SUB: BINARY_OP(vm, -); break;
-            case FTH_OP_MUL: BINARY_OP(vm, *); break;
-            case FTH_OP_DIV: BINARY_OP(vm, /); break;
             case FTH_OP_NEGATE: TAIL(vm) = -TAIL(vm); break;
             default:
                 abort();
         }
     }
+}
+
+fth_result_t fth_interpret(fth_vm *vm, const char *source) {
+    fth_result_t result = FTH_OK;
+    fth_chunk chunk;
+    chunk_init(&chunk);
+    if (!fth_compile(source, &chunk)) {
+        result = FTH_COMPILE_ERROR;
+        goto BAIL;
+    }
+    vm->chunk = &chunk;
+    vm->pc = vm->chunk->data;
+    result = fth_run(vm);
+BAIL:
+    chunk_free(&chunk);
+    return result;
 }
 
 static char* readfile(const char *path, size_t *size) {
@@ -604,7 +757,7 @@ BAIL:
     return result;
 }
 
-fth_result_t fth_run_file(fth_vm *vm, const char *path) {
+fth_result_t fth_interpret_file(fth_vm *vm, const char *path) {
     size_t size;
     char *source = readfile(path, &size);
     if (!source)
