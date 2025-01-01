@@ -30,9 +30,14 @@ typedef enum {
 } fth_result_t;
 
 typedef enum {
-    FTH_RETURN,
-    FTH_CONSTANT,
-    FTH_CONSTANT_LONG
+    FTH_OP_RETURN,
+    FTH_OP_CONSTANT,
+    FTH_OP_CONSTANT_LONG,
+    FTH_OP_NEGATE,
+    FTH_OP_ADD,
+    FTH_OP_SUB,
+    FTH_OP_MUL,
+    FTH_OP_DIV
 } fth_op;
 
 void fth_init(fth_vm *vm);
@@ -133,9 +138,7 @@ static void chunk_write(fth_chunk *chunk, uint8_t byte, int line) {
 
 static int constant_instruction(const char *name, fth_chunk *chunk, int offset) {
     uint8_t constant = chunk->data[offset + 1];
-    printf("%-16s %4d '", name, constant);
-    printf("%g", chunk->constants[constant]);
-    printf("'\n");
+    printf("%-16s %4d '%g'\n", name, constant, chunk->constants[constant]);
     return offset + 2;
 }
 
@@ -174,8 +177,22 @@ static int disassemble_instruction(fth_chunk *chunk, int offset) {
         printf("%4d ", line);
     uint8_t instruction = chunk->data[offset];
     switch (instruction) {
-        case FTH_RETURN:
+        case FTH_OP_RETURN:
             return simple_instruction("OP_RETURN", offset);
+        case FTH_OP_CONSTANT:
+            return constant_instruction("OP_CONSTANT", chunk, offset);
+        case FTH_OP_CONSTANT_LONG:
+            return long_constant_instruction("OP_CONSTANT_LONG", chunk, offset);
+        case FTH_OP_ADD:
+            return simple_instruction("OP_ADD", offset);
+        case FTH_OP_SUB:
+            return simple_instruction("OP_SUB", offset);
+        case FTH_OP_MUL:
+            return simple_instruction("OP_MUL", offset);
+        case FTH_OP_DIV:
+            return simple_instruction("OP_DIV", offset);
+        case FTH_OP_NEGATE:
+            return simple_instruction("OP_NEGATE", offset);
         default:
             printf("Unknown opcode %d\n", instruction);
             return offset + 1;
@@ -188,18 +205,18 @@ static void chunk_disassemble(fth_chunk *chunk, const char *name) {
         offset = disassemble_instruction(chunk, offset);
 }
 
-static int fth_constant(fth_chunk *chunk, fth_value value) {
+static int chunk_add_constant(fth_chunk *chunk, fth_value value) {
     garry_append(chunk->constants, value);
     return garry_count(chunk->constants) - 1;
 }
 
 static void chunk_write_constant(fth_chunk *chunk, fth_value value, int line) {
-    int index = fth_constant(chunk, value);
+    int index = chunk_add_constant(chunk, value);
     if (index < 256) {
-        chunk_write(chunk, FTH_CONSTANT, line);
+        chunk_write(chunk, FTH_OP_CONSTANT, line);
         chunk_write(chunk, (uint8_t)index, line);
     } else {
-        chunk_write(chunk, FTH_CONSTANT_LONG, line);
+        chunk_write(chunk, FTH_OP_CONSTANT_LONG, line);
         chunk_write(chunk, (uint8_t)(index & 0xff), line);
         chunk_write(chunk, (uint8_t)((index >> 8) & 0xff), line);
         chunk_write(chunk, (uint8_t)((index >> 16) & 0xff), line);
@@ -239,6 +256,15 @@ void fth_compile(const char *src, fth_chunk *chunk) {
     
 }
 
+#define BINARY_OP(vm, op) \
+    do { \
+      double b = fth_pop(vm); \
+      double a = fth_pop(vm); \
+      fth_push(vm, a op b); \
+    } while(0)
+
+#define TAIL(vm) *(fth_value*)garry_last(vm->stack)
+
 fth_result_t fth_run(fth_vm *vm) {
     for (;;) {
         printf("          ");
@@ -248,14 +274,18 @@ fth_result_t fth_run(fth_vm *vm) {
         disassemble_instruction(vm->chunk, (int)(vm->pc - vm->chunk->data));
         
         uint8_t instruction;
-        fth_value v;
         switch (instruction = *vm->pc++) {
-            case FTH_RETURN:
+            case FTH_OP_RETURN:
+                printf(" %g \n", fth_pop(vm));
                 return FTH_OK;
-            case FTH_CONSTANT:
-                v = vm->chunk->constants[*vm->pc++];
-                printf(" %g\n", v);
+            case FTH_OP_CONSTANT:
+                fth_push(vm, vm->chunk->constants[*vm->pc++]);
                 break;
+            case FTH_OP_ADD: BINARY_OP(vm, +); break;
+            case FTH_OP_SUB: BINARY_OP(vm, -); break;
+            case FTH_OP_MUL: BINARY_OP(vm, *); break;
+            case FTH_OP_DIV: BINARY_OP(vm, /); break;
+            case FTH_OP_NEGATE: TAIL(vm) = -TAIL(vm); break;
             default:
                 abort();
         }
