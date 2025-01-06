@@ -171,7 +171,11 @@ fth_result_t fth_stack_pop(fth_vm *vm, fth_value *value) {
     }
 }
 
-fth_result_t fth_stack_at(fth_vm *vm, fth_value *value) {
+fth_result_t fth_stack_at(fth_vm *vm, int idx, fth_value *value) {
+    return FTH_OK;
+}
+
+fth_result_t fth_stack_peek(fth_vm *vm, int distance, fth_value *value) {
     return FTH_OK;
 }
 
@@ -232,12 +236,6 @@ fth_result_t fth_exec_file(fth_vm *vm, const char *path) {
                 vm->error = format("failed to alloc memory '%zub'\n", NULL, size);
                 return FTH_COMPILE_ERROR;
         }
-    char *error = NULL;
-    int error_at = -1;
-    if (is_utf8(source, size, &error, &error_at)) {
-        vm->error = strdup(error);
-        return FTH_COMPILE_ERROR;
-    }
     fth_result_t result = fth_exec(vm, source);
     free(source);
     return result;

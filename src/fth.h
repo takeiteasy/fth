@@ -59,7 +59,8 @@ void fth_destroy(fth_vm *vm);
 
 void fth_stack_push(fth_vm *vm, fth_value value);
 fth_result_t fth_stack_pop(fth_vm *vm, fth_value *value);
-fth_result_t fth_stack_at(fth_vm *vm, fth_value *value);
+fth_result_t fth_stack_at(fth_vm *vm, int idx, fth_value *value);
+fth_result_t fth_stack_peek(fth_vm *vm, int distance, fth_value *value);
 
 fth_result_t fth_exec(fth_vm *vm, const unsigned char *source);
 fth_result_t fth_exec_file(fth_vm *vm, const char *path);
