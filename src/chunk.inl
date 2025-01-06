@@ -9,7 +9,8 @@ typedef enum {
     FTH_OP_RETURN,
     FTH_OP_CONSTANT,
     FTH_OP_CONSTANT_LONG,
-    FTH_OP_NEGATE
+    FTH_OP_PERIOD,
+    FTH_OP_DUMP
 } fth_vm_op;
 
 typedef struct {
@@ -100,8 +101,10 @@ static int disassemble_instruction(fth_chunk *chunk, int offset) {
             return constant_instruction("OP_CONSTANT", chunk, offset);
         case FTH_OP_CONSTANT_LONG:
             return long_constant_instruction("OP_CONSTANT_LONG", chunk, offset);
-        case FTH_OP_NEGATE:
-            return simple_instruction("OP_NEGATE", offset);
+        case FTH_OP_PERIOD:
+            return simple_instruction("OP_PERIOD", offset);
+        case FTH_OP_DUMP:
+            return simple_instruction("OP_DUMP_STACK", offset);
         default:
             printf("Unknown opcode %d\n", instruction);
             return offset + 1;

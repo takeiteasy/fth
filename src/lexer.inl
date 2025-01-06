@@ -14,18 +14,8 @@ typedef enum {
     FTH_TOKEN_NUMBER,
     FTH_TOKEN_INTEGER,
     // basic ops
-    FTH_TOKEN_COLON, // :
-    FTH_TOKEN_SEMICOLON, // ;
-    FTH_TOKEN_UNARY_NEGATIVE, // -
     FTH_TOKEN_PERIOD, // .
-    FTH_TOKEN_LEFT_PAREN, // (
-    FTH_TOKEN_RIGHT_PAREN, // )
-    FTH_TOKEN_LEFT_SQR_PAREN, // [
-    FTH_TOKEN_RIGHT_SQR_PAREN, // ]
-    FTH_TOKEN_LEFT_BRKT_PAREN, // {
-    FTH_TOKEN_RIGHT_BRKT_PAREN, // }
     // long ops
-    FTH_TOKEN_NTH,
     FTH_TOKEN_POP,  // >$
     FTH_TOKEN_PUSH, //  $>
     FTH_TOKEN_DUMP  // .$
@@ -43,6 +33,7 @@ typedef struct {
     struct {
         const unsigned char *ptr;
         wchar_t ch;
+        int ch_length;
     } cursor;
     int line;
     fth_token current;
@@ -80,17 +71,23 @@ static inline void update_start(fth_parser *parser) {
 static inline wchar_t advance(fth_parser *parser) {
     int l = ctowc(parser->cursor.ptr, NULL);
     parser->cursor.ptr += l;
-    ctowc(parser->cursor.ptr, &parser->cursor.ch);
+    parser->cursor.ch_length = ctowc(parser->cursor.ptr, &parser->cursor.ch);
     if (parser->cursor.ch == L'\n')
         parser->line++;
     return parser->cursor.ch;
+}
+
+static inline void advance_n(fth_parser *parser, int _n) {
+    int n = _n;
+    while (!is_eof(parser) && n-- > 0)
+        advance(parser);
 }
 
 static inline wchar_t next(fth_parser *parser) {
     if (is_eof(parser))
         return L'\0';
     wchar_t next;
-    ctowc(parser->cursor.ptr, &next);
+    ctowc(parser->cursor.ptr + parser->cursor.ch_length, &next);
     return next;
 }
 
@@ -244,35 +241,14 @@ static fth_token next_token(fth_parser *parser) {
             return read_number(parser);
         case L'"':
             return read_string(parser);
-        case L':':
-            return fth_token_make(parser, FTH_TOKEN_COLON);
-        case L';':
-            return fth_token_make(parser, FTH_TOKEN_SEMICOLON);
-        case L'.':
-            switch (next(parser)) {
-                case L'$':
-                    advance(parser);
-                    return fth_token_make(parser, FTH_TOKEN_DUMP);
-                default:
-                    return fth_token_make(parser, FTH_TOKEN_PERIOD);
+        case L'.':;
+            if (next(parser) == L'$') {
+                advance_n(parser, 2);
+                return fth_token_make(parser, FTH_TOKEN_DUMP);
+            } else {
+                advance(parser);
+                return fth_token_make(parser, FTH_TOKEN_PERIOD);
             }
-            break;
-        case L'>':
-            switch (next(parser)) {
-                case L'$':
-                    advance(parser);
-                    return fth_token_make(parser, FTH_TOKEN_POP);
-                default:
-                    return read_atom(parser);
-            }
-        case L'$':
-            switch (next(parser)) {
-                case L'>':
-                    return fth_token_make(parser, FTH_TOKEN_PUSH);
-                default:
-                    return read_atom(parser);
-            }
-            break;
         default:
             return read_atom(parser);
     }
@@ -292,28 +268,8 @@ static const char* fth_token_str(fth_token *token) {
             return "NUMBER";
         case FTH_TOKEN_INTEGER:
             return "INTEGER";
-        case FTH_TOKEN_COLON: // :
-            return "COLON";
-        case FTH_TOKEN_SEMICOLON: // ;
-            return "SEMICOLON";
-        case FTH_TOKEN_UNARY_NEGATIVE: // -
-            return "NEGATIVE";
-        case FTH_TOKEN_PERIOD: // .
+        case FTH_TOKEN_PERIOD:
             return "PERIOD";
-        case FTH_TOKEN_LEFT_PAREN: // (
-            return "LEFT_PAREN";
-        case FTH_TOKEN_RIGHT_PAREN: // )
-            return "RIGHT_PAREN";
-        case FTH_TOKEN_LEFT_SQR_PAREN: // [
-            return "LEFT_SQUARE_PAREN";
-        case FTH_TOKEN_RIGHT_SQR_PAREN: // ]
-            return "RIGHT_SQUARE_PAREN";
-        case FTH_TOKEN_LEFT_BRKT_PAREN: // {
-            return "LEFT_CURLY_PAREN";
-        case FTH_TOKEN_RIGHT_BRKT_PAREN: // }
-            return "RIGHT_CURLY_PAREN";
-        case FTH_TOKEN_NTH:
-            return "STACK_AT";
         case FTH_TOKEN_POP:  // >$
             return "STACK_POP";
         case FTH_TOKEN_PUSH: //  $>
@@ -394,33 +350,15 @@ static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
             case FTH_TOKEN_INTEGER:
                 emit_integer(parser, chunk);
                 break;
-            case FTH_TOKEN_COLON:
-                break;
-            case FTH_TOKEN_SEMICOLON:
-                break;
-            case FTH_TOKEN_UNARY_NEGATIVE:
-                break;
             case FTH_TOKEN_PERIOD:
-                break;
-            case FTH_TOKEN_LEFT_PAREN:
-                break;
-            case FTH_TOKEN_RIGHT_PAREN:
-                break;
-            case FTH_TOKEN_LEFT_SQR_PAREN:
-                break;
-            case FTH_TOKEN_RIGHT_SQR_PAREN:
-                break;
-            case FTH_TOKEN_LEFT_BRKT_PAREN:
-                break;
-            case FTH_TOKEN_RIGHT_BRKT_PAREN:
-                break;
-            case FTH_TOKEN_NTH:
+                emit(parser, chunk, FTH_OP_PERIOD);
                 break;
             case FTH_TOKEN_POP:
                 break;
             case FTH_TOKEN_PUSH:
                 break;
             case FTH_TOKEN_DUMP:
+                emit(parser, chunk, FTH_OP_DUMP);
                 break;
         }
         parser->previous = parser->current;

@@ -126,9 +126,19 @@ static fth_result_t fth_run(fth_vm *vm) {
             case FTH_OP_CONSTANT_LONG:
                 fth_stack_push(vm, vm->chunk->constants[*vm->pc++]);
                 break;
-            case FTH_OP_NEGATE: {
+            case FTH_OP_PERIOD:
+                if (!garry_count(vm->stack))
+                    abort();
+                fth_print_value(*(fth_value*)garry_last(vm->stack));
+                printf("\n");
                 break;
-            }
+            case FTH_OP_DUMP:
+                for (int i = 0; i < garry_count(vm->stack); i++) {
+                    fth_print_value(vm->stack[i]);
+                    printf(" ");
+                }
+                printf("\n");
+                break;
             default:
                 abort();
         }
