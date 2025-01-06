@@ -16,3 +16,12 @@ targets:
     platform: macOS
     sources:
       - path: src/
+      - path: fth.c
+      - path: fth.h
+        type: folder
+      - path: README.md
+        type: folder
+      - path: project.yml
+        type: folder
+      - path: test.f
+        type: folder
