@@ -78,22 +78,92 @@ static char* format(const char *fmt, size_t *size, ...) {
     return result;
 }
 
-static void fth_print_value(fth_value value) {
+fth_value fth_nil(void) {
+    return (fth_value) {
+        .type = FTH_VALUE_NIL
+    };
+}
+
+#define X(T, N, TYPE) \
+fth_value fth_##N(TYPE v) { \
+    return (fth_value) { \
+        .type = FTH_VALUE_##T, \
+        .as.N = v \
+    }; \
+} \
+bool fth_is_##N(fth_value v) { \
+    return v.type == FTH_VALUE_##T; \
+} \
+TYPE fth_as_##N(fth_value v) { \
+    return (TYPE)v.as.N; \
+}
+TYPES
+#undef X
+
+bool fth_object_is(fth_value value, fth_object_t type) {
+    return fth_is_obj(value) && ((fth_object*)fth_as_obj(value))->type == type;
+}
+
+fth_object* fth_obj_new(fth_object_t type, size_t size) {
+    fth_object *result = malloc(size);
+    result->type = type;
+    return result;
+}
+
+void fth_obj_destroy(fth_object *obj) {
+    switch (obj->type) {
+        case FTH_OBJECT_STRING: {
+            fth_string* string = (fth_string*)obj;
+            free(string->chars);
+            free(string);
+            break;
+        }
+    }
+}
+
+fth_string* fth_copy_string(const unsigned char *chars, int length) {
+    fth_string *result = malloc(sizeof(fth_string));
+    result->obj.type = FTH_OBJECT_STRING;
+    if (!chars) {
+        result->chars = malloc(1);
+        result->chars[0] = '\0';
+        result->length = 0;
+    } else {
+        result->length = length ? length : (int)strlen((const char*)chars);
+        size_t size = length * sizeof(unsigned char);
+        result->chars = malloc(size + 1);
+        memcpy(result->chars, chars, size);
+    }
+    return result;
+}
+
+void fth_print_value(fth_value value) {
     switch (value.type) {
         case FTH_VALUE_NIL:
             printf("NIL");
             break;
-        case FTH_VALUE_BOOL:
+        case FTH_VALUE_BOOLEAN:
             printf("%s", value.as.boolean ? "TRUE" : "FALSE");
             break;
         case FTH_VALUE_INTEGER:
-            printf("%llu", FTH_AS_INTEGER(value));
+            printf("%llu", fth_as_integer(value));
             break;
         case FTH_VALUE_NUMBER:
-            printf("%g", FTH_AS_NUMBER(value));
+            printf("%g", fth_as_number(value));
             break;
+        case FTH_VALUE_OBJECT: {
+            fth_object *obj = fth_as_obj(value);
+            switch (obj->type) {
+                case FTH_OBJECT_STRING:
+                    printf("\"%.*s\"", fth_string_length(value), fth_as_cstring(value));
+                    break;
+                default:
+                    abort();
+            }
+            break;
+        }
         default:
-            break;
+            abort();
     }
 }
 
@@ -102,22 +172,15 @@ static void fth_print_value(fth_value value) {
 
 static fth_result_t fth_run(fth_vm *vm) {
     for (;;) {
-        printf("          ");
-        for (int i = 0; i < garry_count(vm->stack); i++) {
-            printf("[ ");
-            fth_print_value(vm->stack[i]);
-            printf(" ]");
-        }
-        printf("\n");
-        disassemble_instruction(vm->chunk, (int)(vm->pc - vm->chunk->data));
         uint8_t instruction;
         switch (instruction = *vm->pc++) {
             case FTH_OP_RETURN: {
                 fth_value value;
                 fth_result_t result;
-                if ((result = fth_stack_pop(vm, &value)) != FTH_OK)
+                if ((result = fth_stack_pop(vm, &value)) != FTH_OK) {
+                    vm->error = strdup("stack underflow");
                     return result;
-                printf(" ");
+                }
                 fth_print_value(value);
                 printf("\n");
                 return FTH_OK;
@@ -127,15 +190,18 @@ static fth_result_t fth_run(fth_vm *vm) {
                 fth_stack_push(vm, vm->chunk->constants[*vm->pc++]);
                 break;
             case FTH_OP_PERIOD:
-                if (!garry_count(vm->stack))
-                    abort();
+                if (!garry_count(vm->stack)) {
+                    vm->error = strdup("stack underflow");
+                    return FTH_RUNTIME_ERROR;
+                }
                 fth_print_value(*(fth_value*)garry_last(vm->stack));
                 printf("\n");
                 break;
             case FTH_OP_DUMP:
                 for (int i = 0; i < garry_count(vm->stack); i++) {
+                    printf("[ ");
                     fth_print_value(vm->stack[i]);
-                    printf(" ");
+                    printf(" ]");
                 }
                 printf("\n");
                 break;
@@ -161,6 +227,10 @@ void fth_init(fth_vm *vm) {
 void fth_destroy(fth_vm *vm) {
     if (vm->error)
         free(vm->error);
+    for (int i = 0; i < garry_count(vm->objects); i++)
+        if (vm->objects[i].type == FTH_VALUE_OBJECT)
+            fth_obj_destroy(&vm->objects[i]);
+    garry_free(vm->objects);
     stack_reset(vm);
 }
 
@@ -171,7 +241,7 @@ void fth_stack_push(fth_vm *vm, fth_value value) {
 fth_result_t fth_stack_pop(fth_vm *vm, fth_value *value) {
     if (!garry_count(vm->stack)) {
         if (value)
-            *value = FTH_NIL_VAL;
+            *value = fth_nil();
         return FTH_RUNTIME_ERROR;
     } else {
         if (value)
@@ -199,7 +269,6 @@ fth_result_t fth_exec(fth_vm *vm, const unsigned char *source) {
         result = FTH_COMPILE_ERROR;
         goto BAIL;
     }
-    chunk_disassemble(&chunk, "test");
     vm->chunk = &chunk;
     vm->pc = vm->chunk->data;
     result = fth_run(vm);

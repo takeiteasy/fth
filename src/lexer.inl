@@ -316,7 +316,7 @@ static void emit_number(fth_parser *parser, fth_chunk *chunk) {
     memcpy(buf, parser->begin, parser->current.length);
     buf[parser->current.length+1] = '\0';
     double value = strtod(buf, NULL);
-    emit_constant(parser, chunk, FTH_NUMBER_VAL(value));
+    emit_constant(parser, chunk, fth_number(value));
 }
 
 static void emit_integer(fth_parser *parser, fth_chunk *chunk) {
@@ -328,13 +328,12 @@ static void emit_integer(fth_parser *parser, fth_chunk *chunk) {
     buf[parser->current.length+1] = '\0';
     char *end;
     uint64_t value = strtoull(buf, &end, 10);
-    emit_constant(parser, chunk, FTH_INTEGER_VAL(value));
+    emit_constant(parser, chunk, fth_integer(value));
 }
 
 static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
     for (;;) {
         parser->current = next_token(parser);
-        fth_print_token(&parser->current);
         switch (parser->current.type) {
             case FTH_TOKEN_EOF:
                 emit(parser, chunk, FTH_TOKEN_EOF);
@@ -343,6 +342,7 @@ static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
             case FTH_TOKEN_ATOM:
                 break;
             case FTH_TOKEN_STRING:
+                emit_constant(parser, chunk, fth_obj(fth_copy_string(parser->current.begin, parser->current.length)));
                 break;
             case FTH_TOKEN_NUMBER:
                 emit_number(parser, chunk);
