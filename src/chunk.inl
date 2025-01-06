@@ -5,6 +5,13 @@
 //  Created by George Watson on 06/01/2025.
 //
 
+typedef enum {
+    FTH_OP_RETURN,
+    FTH_OP_CONSTANT,
+    FTH_OP_CONSTANT_LONG,
+    FTH_OP_NEGATE
+} fth_vm_op;
+
 typedef struct {
     int offset, line;
 } fth_chunk_linestart;
@@ -40,4 +47,87 @@ static void chunk_write(fth_chunk *chunk, uint8_t byte, int line) {
         .line = line
     };
     garry_append(chunk->lines, result);
+}
+
+static int get_line(fth_chunk *chunk, int instruction) {
+    int start = 0;
+    int end = garry_count(chunk->lines) - 1;
+    for (;;) {
+        int mid = (start + end) / 2;
+        fth_chunk_linestart *line = &chunk->lines[mid];
+        if (instruction < line->offset)
+            end = mid - 1;
+        else if (mid == garry_count(chunk->lines) - 1 || instruction < chunk->lines[mid + 1].offset)
+            return line->line;
+        else
+            start = mid + 1;
+    }
+}
+
+static int constant_instruction(const char *name, fth_chunk *chunk, int offset) {
+    uint8_t c = chunk->data[offset + 1];
+    printf("%-16s %4d '", name, c);
+    fth_print_value(chunk->constants[c]);
+    printf("'\n");
+    return offset + 2;
+}
+
+static int long_constant_instruction(const char *name, fth_chunk *chunk, int offset) {
+    uint32_t c = chunk->data[offset + 1] | (chunk->data[offset + 2] << 8) | (chunk->data[offset + 3] << 16);
+    printf("%-16s %4d '", name, c);
+    fth_print_value(chunk->constants[c]);
+    printf("'\n");
+    return offset + 4;
+}
+
+static int simple_instruction(const char* name, int offset) {
+    printf("%s\n", name);
+    return offset + 1;
+}
+
+static int disassemble_instruction(fth_chunk *chunk, int offset) {
+    printf("%04d ", offset);
+    int line = get_line(chunk, offset);
+    if (offset > 0 && line == get_line(chunk, offset - 1))
+        printf("   | ");
+    else
+        printf("%4d ", line);
+    uint8_t instruction = chunk->data[offset];
+    switch (instruction) {
+        case FTH_OP_RETURN:
+            return simple_instruction("OP_RETURN", offset);
+        case FTH_OP_CONSTANT:
+            return constant_instruction("OP_CONSTANT", chunk, offset);
+        case FTH_OP_CONSTANT_LONG:
+            return long_constant_instruction("OP_CONSTANT_LONG", chunk, offset);
+        case FTH_OP_NEGATE:
+            return simple_instruction("OP_NEGATE", offset);
+        default:
+            printf("Unknown opcode %d\n", instruction);
+            return offset + 1;
+    }
+}
+
+static void chunk_disassemble(fth_chunk *chunk, const char *name) {
+    printf("== %s ==\n", name);
+    for (int offset = 0; offset < garry_count(chunk->data);)
+        offset = disassemble_instruction(chunk, offset);
+}
+
+static int chunk_add_constant(fth_chunk *chunk, fth_value value) {
+    garry_append(chunk->constants, value);
+    return garry_count(chunk->constants) - 1;
+}
+
+static void chunk_write_constant(fth_chunk *chunk, fth_value value, int line) {
+    int index = chunk_add_constant(chunk, value);
+    if (index < 256) {
+        chunk_write(chunk, FTH_OP_CONSTANT, line);
+        chunk_write(chunk, (uint8_t)index, line);
+    } else {
+        chunk_write(chunk, FTH_OP_CONSTANT_LONG, line);
+        chunk_write(chunk, (uint8_t)(index & 0xff), line);
+        chunk_write(chunk, (uint8_t)((index >> 8) & 0xff), line);
+        chunk_write(chunk, (uint8_t)((index >> 16) & 0xff), line);
+    }
 }

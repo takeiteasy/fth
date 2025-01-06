@@ -52,33 +52,95 @@ static void *__garry_shrinkf(void *arr, int itemsize) {
     return NULL;
 }
 
+static char* __format(const char *fmt, size_t *size, va_list args) {
+    va_list _copy;
+    va_copy(_copy, args);
+    size_t _size = vsnprintf(NULL, 0, fmt, args);
+    va_end(_copy);
+    char *result = malloc(_size + 1);
+    if (!result)
+        return NULL;
+    vsnprintf(result, _size, fmt, args);
+    result[_size] = '\0';
+    if (size)
+        *size = _size;
+    return result;
+}
+
+static char* format(const char *fmt, size_t *size, ...) {
+    va_list args;
+    va_start(args, size);
+    size_t length;
+    char* result = __format(fmt, &length, args);
+    va_end(args);
+    if (size)
+        *size = length;
+    return result;
+}
+
+static void fth_print_value(fth_value value) {
+    switch (value.type) {
+        case FTH_VALUE_NIL:
+            printf("NIL");
+            break;
+        case FTH_VALUE_BOOL:
+            printf("%s", value.as.boolean ? "TRUE" : "FALSE");
+            break;
+        case FTH_VALUE_INTEGER:
+            printf("%llu", FTH_AS_INTEGER(value));
+            break;
+        case FTH_VALUE_NUMBER:
+            printf("%g", FTH_AS_NUMBER(value));
+            break;
+        default:
+            break;
+    }
+}
+
 #include "chunk.inl"
 #include "lexer.inl"
 
-static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
-    for (;;) {
-        parser->current = next_token(parser);
-        switch (parser->current.type) {
-            case FTH_TOKEN_ERROR:
-                return FTH_COMPILE_ERROR;
-            case FTH_TOKEN_EOF:
-                goto BAIL;
-            default:
-                fth_print_token(&parser->current);
-        }
-        parser->previous = parser->current;
-    }
-BAIL:
-    return parser->error == NULL;
-}
-
 static fth_result_t fth_run(fth_vm *vm) {
+    for (;;) {
+        printf("          ");
+        for (int i = 0; i < garry_count(vm->stack); i++) {
+            printf("[ ");
+            fth_print_value(vm->stack[i]);
+            printf(" ]");
+        }
+        printf("\n");
+        disassemble_instruction(vm->chunk, (int)(vm->pc - vm->chunk->data));
+        uint8_t instruction;
+        switch (instruction = *vm->pc++) {
+            case FTH_OP_RETURN: {
+                fth_value value;
+                fth_result_t result;
+                if ((result = fth_stack_pop(vm, &value)) != FTH_OK)
+                    return result;
+                printf(" ");
+                fth_print_value(value);
+                printf("\n");
+                return FTH_OK;
+            }
+            case FTH_OP_CONSTANT:
+            case FTH_OP_CONSTANT_LONG:
+                fth_stack_push(vm, vm->chunk->constants[*vm->pc++]);
+                break;
+            case FTH_OP_NEGATE: {
+                break;
+            }
+            default:
+                abort();
+        }
+    }
     return FTH_OK;
 }
 
 static void stack_reset(fth_vm *vm) {
     garry_free(vm->stack);
     vm->stack = NULL;
+    garry_free(vm->return_stack);
+    vm->return_stack = NULL;
 }
 
 void fth_init(fth_vm *vm) {
@@ -87,7 +149,30 @@ void fth_init(fth_vm *vm) {
 }
 
 void fth_destroy(fth_vm *vm) {
+    if (vm->error)
+        free(vm->error);
     stack_reset(vm);
+}
+
+void fth_stack_push(fth_vm *vm, fth_value value) {
+    garry_append(vm->stack, value);
+}
+
+fth_result_t fth_stack_pop(fth_vm *vm, fth_value *value) {
+    if (!garry_count(vm->stack)) {
+        if (value)
+            *value = FTH_NIL_VAL;
+        return FTH_RUNTIME_ERROR;
+    } else {
+        if (value)
+            *value = *(fth_value*)garry_last(vm->stack);
+        garry_pop(vm->stack);
+        return FTH_OK;
+    }
+}
+
+fth_result_t fth_stack_at(fth_vm *vm, fth_value *value) {
+    return FTH_OK;
 }
 
 fth_result_t fth_exec(fth_vm *vm, const unsigned char *source) {
@@ -96,10 +181,11 @@ fth_result_t fth_exec(fth_vm *vm, const unsigned char *source) {
     chunk_init(&chunk);
     fth_parser parser;
     parser_init(&parser, source);
-    if (!fth_compile(&parser, &chunk)) {
+    if (fth_compile(&parser, &chunk) != FTH_OK) {
         result = FTH_COMPILE_ERROR;
         goto BAIL;
     }
+    chunk_disassemble(&chunk, "test");
     vm->chunk = &chunk;
     vm->pc = vm->chunk->data;
     result = fth_run(vm);
@@ -131,27 +217,25 @@ BAIL:
     return result;
 }
 
-#include "is_utf8.inl"
-
 fth_result_t fth_exec_file(fth_vm *vm, const char *path) {
     size_t size;
     unsigned char *source = readfile(path, &size);
     if (!source)
         switch (size) {
             case 0:
-                fprintf(stderr, "failed to open '%s'\n", path);
+                vm->error = format("failed to open '%s'\n", NULL, path);
                 return FTH_COMPILE_ERROR;
             case -1:
-                fprintf(stderr, "failed to read '%s'\n", path);
+                vm->error = format("failed to read '%s'\n", NULL, path);
                 return FTH_COMPILE_ERROR;
             default:
-                fprintf(stderr, "failed to alloc memory '%zub'\n", size);
+                vm->error = format("failed to alloc memory '%zub'\n", NULL, size);
                 return FTH_COMPILE_ERROR;
         }
     char *error = NULL;
-    int faulty_bytes;
-    if (is_utf8(source, size, &error, &faulty_bytes)) {
-        fprintf(stderr, "%s\n", error);
+    int error_at = -1;
+    if (is_utf8(source, size, &error, &error_at)) {
+        vm->error = strdup(error);
         return FTH_COMPILE_ERROR;
     }
     fth_result_t result = fth_exec(vm, source);

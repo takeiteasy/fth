@@ -4,6 +4,7 @@
 extern "C" {
 #endif
 #include <stdint.h>
+#include <wchar.h>
 
 typedef struct fth_chunk fth_chunk;
 
@@ -44,6 +45,7 @@ typedef struct {
     fth_value *return_stack;
     fth_value current;
     fth_value previous;
+    char *error;
 } fth_vm;
 
 typedef enum {
@@ -55,9 +57,9 @@ typedef enum {
 void fth_init(fth_vm *vm);
 void fth_destroy(fth_vm *vm);
 
-void fth_push(fth_vm *vm, fth_value value);
-fth_result_t fth_pop(fth_vm *vm, fth_value *value);
-fth_result_t fth_at(fth_vm *vm, fth_value *value);
+void fth_stack_push(fth_vm *vm, fth_value value);
+fth_result_t fth_stack_pop(fth_vm *vm, fth_value *value);
+fth_result_t fth_stack_at(fth_vm *vm, fth_value *value);
 
 fth_result_t fth_exec(fth_vm *vm, const unsigned char *source);
 fth_result_t fth_exec_file(fth_vm *vm, const char *path);
