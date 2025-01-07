@@ -5,21 +5,19 @@
 //  Created by George Watson on 06/01/2025.
 //
 
+#define KEYWORDS \
+    X(POP, )
+
 typedef enum {
     FTH_TOKEN_ERROR,
     FTH_TOKEN_EOF,
     // literals
     FTH_TOKEN_ATOM,
+    FTH_TOKEN_STACK_CLEAR = FTH_OP_CLEAR,
+    FTH_TOKEN_STACK_EXPR,
     FTH_TOKEN_STRING,
     FTH_TOKEN_NUMBER,
     FTH_TOKEN_INTEGER,
-    // basic ops
-    FTH_TOKEN_PERIOD, // .
-    // long ops
-    FTH_TOKEN_POP,  //  R>
-    FTH_TOKEN_PUSH, // >R
-    FTH_TOKEN_DUMP, // .S
-    FTH_TOKEN_DUMP_RSTACK // .R
 } fth_token_t;
 
 typedef struct {
@@ -147,7 +145,7 @@ static fth_token fth_token_make(fth_parser *parser, fth_token_t type) {
     };
 }
 
-static fth_token read_atom(fth_parser *parser) {
+static fth_token read_symbol(fth_parser *parser) {
     for (;;) {
         if (is_eof(parser))
             goto BREAK;
@@ -174,6 +172,27 @@ static fth_token read_atom(fth_parser *parser) {
     }
 BREAK:
     return fth_token_make(parser, FTH_TOKEN_ATOM);
+}
+
+static fth_token read_stack_expr(fth_parser *parser) {
+    fth_token symbol = read_symbol(parser);
+    if (symbol.length == 1)
+        symbol.type = FTH_TOKEN_STACK_CLEAR;
+    else {
+        symbol.type = FTH_TOKEN_STACK_EXPR;
+        symbol.begin++;
+        symbol.length--;
+    }
+    return symbol;
+}
+
+static fth_token read_atom(fth_parser *parser) {
+    switch (peek(parser)) {
+        case '$':
+            return read_stack_expr(parser);
+        default:
+            return read_symbol(parser);
+    }
 }
 
 static fth_token read_number(fth_parser *parser) {
@@ -243,39 +262,8 @@ static fth_token next_token(fth_parser *parser) {
             return read_number(parser);
         case '"':
             return read_string(parser);
-        case '.':
-            switch (next(parser)) {
-                case 's':
-                case 'S':
-                    advance_n(parser, 2);
-                    return fth_token_make(parser, FTH_TOKEN_DUMP);
-                case 'r':
-                case 'R':
-                    advance_n(parser, 2);
-                    return fth_token_make(parser, FTH_TOKEN_DUMP_RSTACK);
-                    
-                default:
-                    advance(parser);
-                    return fth_token_make(parser, FTH_TOKEN_PERIOD);
-            }
-        case '>':
-            switch (next(parser)) {
-                case 'r':
-                case 'R':
-                    advance_n(parser, 2);
-                    return fth_token_make(parser, FTH_TOKEN_PUSH);
-                default:
-                    return read_atom(parser);
-            }
-        case 'r':
-        case 'R':
-            switch (next(parser)) {
-                case '>':
-                    advance_n(parser, 2);
-                    return fth_token_make(parser, FTH_TOKEN_POP);
-                default:
-                    return read_atom(parser);
-            }
+        case '$':
+            return read_atom(parser);
         default:
             return read_atom(parser);
     }
@@ -289,22 +277,16 @@ static const char* fth_token_str(fth_token *token) {
             return "EOF";
         case FTH_TOKEN_ATOM:
             return "ATOM";
+        case FTH_TOKEN_STACK_CLEAR:
+            return "CLEARSTACK";
+        case FTH_TOKEN_STACK_EXPR:
+            return "STACK_EXPR";
         case FTH_TOKEN_STRING:
             return "STRING";
         case FTH_TOKEN_NUMBER:
             return "NUMBER";
         case FTH_TOKEN_INTEGER:
             return "INTEGER";
-        case FTH_TOKEN_PERIOD:
-            return "PERIOD";
-        case FTH_TOKEN_POP:  // >R
-            return "STACK_POP";
-        case FTH_TOKEN_PUSH: //  R>
-            return "STACK_PUSH";
-        case FTH_TOKEN_DUMP:  // .S
-            return "STACK_DUMP";
-        case FTH_TOKEN_DUMP_RSTACK: // .R
-            return "RSTACK_DUMP";
     }
 }
 
@@ -356,6 +338,143 @@ static void emit_integer(fth_parser *parser, fth_chunk *chunk) {
     emit_constant(parser, chunk, fth_integer(value));
 }
 
+int read_basic_int(const unsigned char *start, int *size) {
+    int n = 0;
+    int result = 0;
+    for (;;) {
+        unsigned char c = *(start + n);
+        switch (c) {
+            case '0' ... '9':;
+                int digit = c - '0';
+                if (result > INT_MAX / 10 || (result == INT_MAX / 10 && digit > INT_MAX % 10))
+                    result = INT_MAX;
+                else
+                    result = result * 10 + digit;
+                n++;
+                break;
+            default:
+                goto BAIL;
+        }
+    }
+BAIL:
+    if (size)
+        *size += n;
+    return result;
+}
+
+#define SE_OPS \
+    X(POP, '>') \
+    X(PUSH, '<') \
+    X(COPY, '~') \
+    X(SET, '=') \
+    X(PRINT, '.') \
+
+typedef enum {
+    FTH_SE_OP_CLEAR,
+#define X(N, C) FTH_SE_OP_##N,
+    SE_OPS
+#undef X
+} stack_expr_op;
+
+static bool compile_stack_expr(fth_parser *parser, fth_chunk *chunk) {
+    bool success = true;
+    const unsigned char *str = parser->current.begin;
+    int length = parser->current.length;
+    int cursor = 0;
+    int from = 0, to = 0;
+    stack_expr_op op = FTH_SE_OP_CLEAR;
+    bool is_return_stack = false;
+#define _PEEK (cursor >= length ? '\0' : str[cursor])
+#define _NEXT (cursor + 1 >= length ? '\0' : str[cursor+1])
+#define _READ_INT (read_basic_int(str + cursor, &cursor))
+    // parse source
+    switch (_PEEK) {
+        case 'r':
+        case 'R':
+            is_return_stack = true;
+            cursor++;
+            break;
+        case '0' ... '9':
+        case '~':
+        case '*':
+        case '>':
+        case '<':
+        case '=':
+        case '.':
+            break;
+        case '\0':
+            goto SKIP;
+        default:
+            parser->error = strdup("unexpected character in stack expr source");
+            success = false;
+            goto BAIL;
+    }
+    // parse range
+    
+    switch (_PEEK) {
+        case '*':
+            from = -1;
+            to = -1;
+            cursor++;
+            break;
+        case '0' ... '9': {
+            int a = _READ_INT;
+            if (_PEEK == '~') {
+                from = a;
+                to = -1;
+            } else {
+                from = a;
+                to = a;
+            }
+            break;
+        }
+        case '~':
+            switch (_NEXT) {
+                case '0' ... '9':
+                    from = _READ_INT;
+                    to = -1;
+                    break;
+                default:
+                    break;
+            }
+        case '>':
+        case '<':
+        case '=':
+        case '.':
+            break;
+        case '\0':
+            goto SKIP;
+        default:
+            parser->error = strdup("unexpected char in stack expr range");
+            success = false;
+            goto BAIL;
+    }
+    // parse op
+    switch (_PEEK) {
+#define X(N, C) \
+        case C: \
+            op = FTH_SE_OP_##N; \
+            break;
+        SE_OPS
+#undef X
+        case '\0':
+            goto SKIP;
+        default:
+            parser->error = strdup("unexpected char in stack expr op");
+            success = false;
+            goto BAIL;
+    }
+SKIP:
+    // form expression + write ops
+    // TODO ...
+    // > FTH_OP_EXPR
+    // > FTH_OP_EXPR_DSTACK | FTH_OP_EXPR_RSTACK
+    // > FTH_OP_EXPR_ALL |  FTH_EXPR_RANGE
+    // > FTH_OP_EXPR_CLEAR ...
+BAIL:
+    return success;
+}
+
 static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
     for (;;) {
         parser->current = next_token(parser);
@@ -367,6 +486,7 @@ static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
                 goto BAIL;
             case FTH_TOKEN_ATOM:
                 break;
+            
             case FTH_TOKEN_STRING:
                 emit_constant(parser, chunk, fth_obj(fth_string_new(parser->current.begin, parser->current.length, false)));
                 break;
@@ -376,21 +496,16 @@ static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
             case FTH_TOKEN_INTEGER:
                 emit_integer(parser, chunk);
                 break;
-            case FTH_TOKEN_PERIOD:
-                emit(parser, chunk, FTH_OP_PERIOD);
+            case FTH_TOKEN_STACK_EXPR:
+                if (!compile_stack_expr(parser, chunk))
+                    goto BAIL;
                 break;
-            case FTH_TOKEN_POP:
-                emit(parser, chunk, FTH_OP_POP);
+            case FTH_TOKEN_STACK_CLEAR:
+                emit(parser, chunk, parser->current.type);
                 break;
-            case FTH_TOKEN_PUSH:
-                emit(parser, chunk, FTH_OP_PUSH);
-                break;
-            case FTH_TOKEN_DUMP:
-                emit(parser, chunk, FTH_OP_DUMP);
-                break;
-            case FTH_TOKEN_DUMP_RSTACK:
-                emit(parser, chunk, FTH_OP_DUMP_RSTACK);
-                break;
+            default:
+                parser->error = strdup("unknown token");
+                goto BAIL;
         }
         parser->previous = parser->current;
     }

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <assert.h>
+#include <limits.h>
 
 #include "utils.inl"
 
@@ -194,8 +195,6 @@ void fth_init(fth_vm *vm) {
 }
 
 void fth_destroy(fth_vm *vm) {
-    if (vm->error)
-        free(vm->error);
     for (int i = 0; i < garry_count(vm->objects); i++)
         if (vm->objects[i].type == FTH_VALUE_OBJECT)
             fth_obj_destroy(&vm->objects[i]);

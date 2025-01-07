@@ -9,6 +9,7 @@ typedef enum {
     FTH_OP_RETURN,
     FTH_OP_CONSTANT,
     FTH_OP_CONSTANT_LONG,
+    FTH_OP_CLEAR,
     FTH_OP_PERIOD,
     FTH_OP_POP,
     FTH_OP_PUSH,
