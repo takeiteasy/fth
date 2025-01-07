@@ -77,7 +77,7 @@ TYPES
 
 typedef struct {
     fth_chunk *chunk;
-    uint8_t *pc;
+    uint8_t *sp;
     fth_value *stack;
     fth_value *return_stack;
     fth_value current;

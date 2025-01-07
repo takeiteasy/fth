@@ -16,9 +16,10 @@ typedef enum {
     // basic ops
     FTH_TOKEN_PERIOD, // .
     // long ops
-    FTH_TOKEN_POP,  // >$
-    FTH_TOKEN_PUSH, //  $>
-    FTH_TOKEN_DUMP  // .$
+    FTH_TOKEN_POP,  //  R>
+    FTH_TOKEN_PUSH, // >R
+    FTH_TOKEN_DUMP, // .S
+    FTH_TOKEN_DUMP_RSTACK // .R
 } fth_token_t;
 
 typedef struct {
@@ -41,7 +42,7 @@ typedef struct {
     const char *error;
 } fth_parser;
 
-static int ctowc(const unsigned char* c, wchar_t* out) {
+static int utf8read(const unsigned char* c, wchar_t* out) {
     wchar_t u = *c, l = 1;
     if ((u & 0xC0) == 0xC0) {
         int a = (u & 0x20) ? ((u & 0x10) ? ((u & 0x08) ? ((u & 0x04) ? 6 : 5) : 4) : 3) : 2;
@@ -69,9 +70,9 @@ static inline void update_start(fth_parser *parser) {
 }
 
 static inline wchar_t advance(fth_parser *parser) {
-    int l = ctowc(parser->cursor.ptr, NULL);
+    int l = utf8read(parser->cursor.ptr, NULL);
     parser->cursor.ptr += l;
-    parser->cursor.ch_length = ctowc(parser->cursor.ptr, &parser->cursor.ch);
+    parser->cursor.ch_length = utf8read(parser->cursor.ptr, &parser->cursor.ch);
     if (parser->cursor.ch == '\n')
         parser->line++;
     return parser->cursor.ch;
@@ -87,7 +88,7 @@ static inline wchar_t next(fth_parser *parser) {
     if (is_eof(parser))
         return '\0';
     wchar_t next;
-    ctowc(parser->cursor.ptr + parser->cursor.ch_length, &next);
+    utf8read(parser->cursor.ptr + parser->cursor.ch_length, &next);
     return next;
 }
 
@@ -242,13 +243,38 @@ static fth_token next_token(fth_parser *parser) {
             return read_number(parser);
         case '"':
             return read_string(parser);
-        case '.':;
-            if (next(parser) == '$') {
-                advance_n(parser, 2);
-                return fth_token_make(parser, FTH_TOKEN_DUMP);
-            } else {
-                advance(parser);
-                return fth_token_make(parser, FTH_TOKEN_PERIOD);
+        case '.':
+            switch (next(parser)) {
+                case 's':
+                case 'S':
+                    advance_n(parser, 2);
+                    return fth_token_make(parser, FTH_TOKEN_DUMP);
+                case 'r':
+                case 'R':
+                    advance_n(parser, 2);
+                    return fth_token_make(parser, FTH_TOKEN_DUMP_RSTACK);
+                    
+                default:
+                    advance(parser);
+                    return fth_token_make(parser, FTH_TOKEN_PERIOD);
+            }
+        case '>':
+            switch (next(parser)) {
+                case 'r':
+                case 'R':
+                    advance_n(parser, 2);
+                    return fth_token_make(parser, FTH_TOKEN_PUSH);
+                default:
+                    return read_atom(parser);
+            }
+        case 'r':
+        case 'R':
+            switch (next(parser)) {
+                case '>':
+                    advance_n(parser, 2);
+                    return fth_token_make(parser, FTH_TOKEN_POP);
+                default:
+                    return read_atom(parser);
             }
         default:
             return read_atom(parser);
@@ -271,12 +297,14 @@ static const char* fth_token_str(fth_token *token) {
             return "INTEGER";
         case FTH_TOKEN_PERIOD:
             return "PERIOD";
-        case FTH_TOKEN_POP:  // >$
+        case FTH_TOKEN_POP:  // >R
             return "STACK_POP";
-        case FTH_TOKEN_PUSH: //  $>
+        case FTH_TOKEN_PUSH: //  R>
             return "STACK_PUSH";
-        case FTH_TOKEN_DUMP:  // .$
+        case FTH_TOKEN_DUMP:  // .S
             return "STACK_DUMP";
+        case FTH_TOKEN_DUMP_RSTACK: // .R
+            return "RSTACK_DUMP";
     }
 }
 
@@ -288,7 +316,7 @@ static void parser_init(fth_parser *parser, const unsigned char *source) {
     memset(parser, 0, sizeof(fth_parser));
     parser->begin = source;
     parser->cursor.ptr = source;
-    ctowc(source, &parser->cursor.ch);
+    utf8read(source, &parser->cursor.ch);
     parser->line = 1;
 }
 
@@ -299,10 +327,6 @@ static void emit(fth_parser *parser, fth_chunk *chunk, uint8_t byte) {
 static void emit_op(fth_parser *parser, fth_chunk *chunk, uint8_t byte1, uint8_t byte2) {
     emit(parser, chunk, byte1);
     emit(parser, chunk, byte2);
-}
-
-static void emit_return(fth_parser *parser, fth_chunk *chunk) {
-    emit(parser, chunk, FTH_OP_RETURN);
 }
 
 static void emit_constant(fth_parser *parser, fth_chunk *chunk, fth_value value) {
@@ -338,7 +362,7 @@ static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
         fth_print_token(&parser->current);
         switch (parser->current.type) {
             case FTH_TOKEN_EOF:
-                emit(parser, chunk, FTH_TOKEN_EOF);
+                emit(parser, chunk, FTH_OP_RETURN);
             case FTH_TOKEN_ERROR:
                 goto BAIL;
             case FTH_TOKEN_ATOM:
@@ -356,11 +380,16 @@ static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
                 emit(parser, chunk, FTH_OP_PERIOD);
                 break;
             case FTH_TOKEN_POP:
+                emit(parser, chunk, FTH_OP_POP);
                 break;
             case FTH_TOKEN_PUSH:
+                emit(parser, chunk, FTH_OP_PUSH);
                 break;
             case FTH_TOKEN_DUMP:
                 emit(parser, chunk, FTH_OP_DUMP);
+                break;
+            case FTH_TOKEN_DUMP_RSTACK:
+                emit(parser, chunk, FTH_OP_DUMP_RSTACK);
                 break;
         }
         parser->previous = parser->current;

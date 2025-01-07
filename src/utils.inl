@@ -676,3 +676,273 @@ static int unordered_map_del_string(unordered_map_t *map, const unsigned char *s
     uint64_t key = murmur((void*)strkey, strlen((const char*)strkey), 0);
     return unordered_map_del(map, key);
 }
+
+#if defined(_MSC_VER)
+#define utf8_restrict __restrict
+#elif defined(__clang__) || defined(__GNUC__)
+#define utf8_restrict __restrict__
+#elif defined(__IAR_SYSTEMS_ICC__)
+#define utf8_restrict __restrict
+#else
+#define utf8_restrict
+#endif
+#define utf8_null 0
+typedef int32_t utf8_int32_t;
+typedef unsigned char utf8_int8_t;
+#define utf8_restrict __restrict__
+
+static utf8_int8_t* utf8codepoint(const utf8_int8_t *utf8_restrict str, utf8_int32_t *utf8_restrict out_codepoint) {
+  if (0xf0 == (0xf8 & str[0])) {
+    /* 4 byte utf8 codepoint */
+    *out_codepoint = ((0x07 & str[0]) << 18) | ((0x3f & str[1]) << 12) |
+                     ((0x3f & str[2]) << 6) | (0x3f & str[3]);
+    str += 4;
+  } else if (0xe0 == (0xf0 & str[0])) {
+    /* 3 byte utf8 codepoint */
+    *out_codepoint =
+        ((0x0f & str[0]) << 12) | ((0x3f & str[1]) << 6) | (0x3f & str[2]);
+    str += 3;
+  } else if (0xc0 == (0xe0 & str[0])) {
+    /* 2 byte utf8 codepoint */
+    *out_codepoint = ((0x1f & str[0]) << 6) | (0x3f & str[1]);
+    str += 2;
+  } else {
+    /* 1 byte utf8 codepoint otherwise */
+    *out_codepoint = str[0];
+    str += 1;
+  }
+
+  return (utf8_int8_t *)str;
+}
+
+static utf8_int8_t *utf8catcodepoint(utf8_int8_t *str, utf8_int32_t chr, size_t n) {
+    if (0 == ((utf8_int32_t)0xffffff80 & chr)) {
+        /* 1-byte/7-bit ascii
+         * (0b0xxxxxxx) */
+        if (n < 1) {
+            return utf8_null;
+        }
+        str[0] = (utf8_int8_t)chr;
+        str += 1;
+    } else if (0 == ((utf8_int32_t)0xfffff800 & chr)) {
+        /* 2-byte/11-bit utf8 code point
+         * (0b110xxxxx 0b10xxxxxx) */
+        if (n < 2) {
+            return utf8_null;
+        }
+        str[0] = (utf8_int8_t)(0xc0 | (utf8_int8_t)((chr >> 6) & 0x1f));
+        str[1] = (utf8_int8_t)(0x80 | (utf8_int8_t)(chr & 0x3f));
+        str += 2;
+    } else if (0 == ((utf8_int32_t)0xffff0000 & chr)) {
+        /* 3-byte/16-bit utf8 code point
+         * (0b1110xxxx 0b10xxxxxx 0b10xxxxxx) */
+        if (n < 3) {
+            return utf8_null;
+        }
+        str[0] = (utf8_int8_t)(0xe0 | (utf8_int8_t)((chr >> 12) & 0x0f));
+        str[1] = (utf8_int8_t)(0x80 | (utf8_int8_t)((chr >> 6) & 0x3f));
+        str[2] = (utf8_int8_t)(0x80 | (utf8_int8_t)(chr & 0x3f));
+        str += 3;
+    } else { /* if (0 == ((int)0xffe00000 & chr)) { */
+        /* 4-byte/21-bit utf8 code point
+         * (0b11110xxx 0b10xxxxxx 0b10xxxxxx 0b10xxxxxx) */
+        if (n < 4) {
+            return utf8_null;
+        }
+        str[0] = (utf8_int8_t)(0xf0 | (utf8_int8_t)((chr >> 18) & 0x07));
+        str[1] = (utf8_int8_t)(0x80 | (utf8_int8_t)((chr >> 12) & 0x3f));
+        str[2] = (utf8_int8_t)(0x80 | (utf8_int8_t)((chr >> 6) & 0x3f));
+        str[3] = (utf8_int8_t)(0x80 | (utf8_int8_t)(chr & 0x3f));
+        str += 4;
+    }
+    
+    return str;
+}
+
+static utf8_int32_t utf8uprcodepoint(utf8_int32_t cp) {
+  if (((0x0061 <= cp) && (0x007a >= cp)) ||
+      ((0x00e0 <= cp) && (0x00f6 >= cp)) ||
+      ((0x00f8 <= cp) && (0x00fe >= cp)) ||
+      ((0x03b1 <= cp) && (0x03c1 >= cp)) ||
+      ((0x03c3 <= cp) && (0x03cb >= cp)) ||
+      ((0x0430 <= cp) && (0x044f >= cp))) {
+      cp -= 32;
+  } else if ((0x0450 <= cp) && (0x045f >= cp)) {
+      cp -= 80;
+  } else if (((0x0100 <= cp) && (0x012f >= cp)) ||
+             ((0x0132 <= cp) && (0x0137 >= cp)) ||
+             ((0x014a <= cp) && (0x0177 >= cp)) ||
+             ((0x0182 <= cp) && (0x0185 >= cp)) ||
+             ((0x01a0 <= cp) && (0x01a5 >= cp)) ||
+             ((0x01de <= cp) && (0x01ef >= cp)) ||
+             ((0x01f8 <= cp) && (0x021f >= cp)) ||
+             ((0x0222 <= cp) && (0x0233 >= cp)) ||
+             ((0x0246 <= cp) && (0x024f >= cp)) ||
+             ((0x03d8 <= cp) && (0x03ef >= cp)) ||
+             ((0x0460 <= cp) && (0x0481 >= cp)) ||
+             ((0x048a <= cp) && (0x04ff >= cp))) {
+      cp &= ~0x1;
+  } else if (((0x0139 <= cp) && (0x0148 >= cp)) ||
+             ((0x0179 <= cp) && (0x017e >= cp)) ||
+             ((0x01af <= cp) && (0x01b0 >= cp)) ||
+             ((0x01b3 <= cp) && (0x01b6 >= cp)) ||
+             ((0x01cd <= cp) && (0x01dc >= cp))) {
+      cp -= 1;
+      cp |= 0x1;
+  } else {
+      switch (cp) {
+          default:
+              break;
+          case 0x00ff:
+              cp = 0x0178;
+              break;
+          case 0x0180:
+              cp = 0x0243;
+              break;
+          case 0x01dd:
+              cp = 0x018e;
+              break;
+          case 0x019a:
+              cp = 0x023d;
+              break;
+          case 0x019e:
+              cp = 0x0220;
+              break;
+          case 0x0292:
+              cp = 0x01b7;
+              break;
+          case 0x01c6:
+              cp = 0x01c4;
+              break;
+          case 0x01c9:
+              cp = 0x01c7;
+              break;
+          case 0x01cc:
+              cp = 0x01ca;
+              break;
+          case 0x01f3:
+              cp = 0x01f1;
+              break;
+          case 0x01bf:
+              cp = 0x01f7;
+              break;
+          case 0x0188:
+              cp = 0x0187;
+              break;
+          case 0x018c:
+              cp = 0x018b;
+              break;
+          case 0x0192:
+              cp = 0x0191;
+              break;
+          case 0x0199:
+              cp = 0x0198;
+              break;
+          case 0x01a8:
+              cp = 0x01a7;
+              break;
+          case 0x01ad:
+              cp = 0x01ac;
+              break;
+          case 0x01b9:
+              cp = 0x01b8;
+              break;
+          case 0x01bd:
+              cp = 0x01bc;
+              break;
+          case 0x01f5:
+              cp = 0x01f4;
+              break;
+          case 0x023c:
+              cp = 0x023b;
+              break;
+          case 0x0242:
+              cp = 0x0241;
+              break;
+          case 0x037b:
+              cp = 0x03fd;
+              break;
+          case 0x037c:
+              cp = 0x03fe;
+              break;
+          case 0x037d:
+              cp = 0x03ff;
+              break;
+          case 0x03f3:
+              cp = 0x037f;
+              break;
+          case 0x03ac:
+              cp = 0x0386;
+              break;
+          case 0x03ad:
+              cp = 0x0388;
+              break;
+          case 0x03ae:
+              cp = 0x0389;
+              break;
+          case 0x03af:
+              cp = 0x038a;
+              break;
+          case 0x03cc:
+              cp = 0x038c;
+              break;
+          case 0x03cd:
+              cp = 0x038e;
+              break;
+          case 0x03ce:
+              cp = 0x038f;
+              break;
+          case 0x0371:
+              cp = 0x0370;
+              break;
+          case 0x0373:
+              cp = 0x0372;
+              break;
+          case 0x0377:
+              cp = 0x0376;
+              break;
+          case 0x03d1:
+              cp = 0x0398;
+              break;
+          case 0x03d7:
+              cp = 0x03cf;
+              break;
+          case 0x03f2:
+              cp = 0x03f9;
+              break;
+          case 0x03f8:
+              cp = 0x03f7;
+              break;
+          case 0x03fb:
+              cp = 0x03fa;
+              break;
+      }
+  }
+    
+    return cp;
+}
+
+static size_t utf8codepointsize(utf8_int32_t chr) {
+    if (0 == ((utf8_int32_t)0xffffff80 & chr)) {
+        return 1;
+    } else if (0 == ((utf8_int32_t)0xfffff800 & chr)) {
+        return 2;
+    } else if (0 == ((utf8_int32_t)0xffff0000 & chr)) {
+        return 3;
+    } else { /* if (0 == ((int)0xffe00000 & chr)) { */
+        return 4;
+    }
+}
+
+static void utf8upr(utf8_int8_t *utf8_restrict str) {
+    utf8_int32_t cp = 0;
+    utf8_int8_t *pn = utf8codepoint((const utf8_int8_t*)str, &cp);
+    while (cp != 0) {
+        const utf8_int32_t lwr_cp = utf8uprcodepoint(cp);
+        const size_t size = utf8codepointsize(lwr_cp);
+        if (lwr_cp != cp)
+            utf8catcodepoint((utf8_int8_t*)str, lwr_cp, size);
+        str = pn;
+        pn = utf8codepoint((const utf8_int8_t*)str, &cp);
+    }
+}

@@ -92,16 +92,49 @@ void fth_print_value(fth_value value) {
     }
 }
 
+static void __stack_push(fth_value **stack, fth_value value) {
+    garry_append(*stack, value);
+}
+
+static fth_result_t __stack_pop(fth_value **stack, fth_value *value) {
+    if (!garry_count(*stack)) {
+        if (value)
+            *value = fth_nil();
+        return FTH_RUNTIME_ERROR;
+    } else {
+        if (value)
+            *value = *(fth_value*)garry_last(*stack);
+        garry_pop(*stack);
+        return FTH_OK;
+    }
+}
+
+static fth_result_t __stack_at(fth_value **stack, int idx, fth_value *value) {
+    return FTH_OK;
+}
+
+static fth_result_t __stack_peek(fth_value **stack, int distance, fth_value *value) {
+    return FTH_OK;
+}
+
 #include "chunk.inl"
 #include "lexer.inl"
+
+static void dump_stack(fth_value *stack) {
+    for (int i = 0; i < garry_count(stack); i++) {
+        fth_print_value(stack[i]);
+        printf(" ");
+    }
+    printf("\n");
+}
 
 static fth_result_t fth_run(fth_vm *vm) {
     for (;;) {
         uint8_t instruction;
-        switch (instruction = *vm->pc++) {
-            case FTH_OP_RETURN: {
-                fth_value value;
-                fth_result_t result;
+        fth_value value;
+        fth_result_t result;
+        switch (instruction = *vm->sp++) {
+            case FTH_OP_RETURN:
                 if ((result = fth_stack_pop(vm, &value)) != FTH_OK) {
                     vm->error = strdup("stack underflow");
                     return result;
@@ -109,26 +142,37 @@ static fth_result_t fth_run(fth_vm *vm) {
                 fth_print_value(value);
                 printf("\n");
                 return FTH_OK;
-            }
             case FTH_OP_CONSTANT:
             case FTH_OP_CONSTANT_LONG:
-                fth_stack_push(vm, vm->chunk->constants[*vm->pc++]);
+                __stack_push(&vm->stack, vm->chunk->constants[*vm->sp++]);
                 break;
             case FTH_OP_PERIOD:
                 if (!garry_count(vm->stack)) {
-                    vm->error = strdup("stack underflow");
+                    vm->error = strdup("data stack underflow");
                     return FTH_RUNTIME_ERROR;
                 }
                 fth_print_value(*(fth_value*)garry_last(vm->stack));
                 printf("\n");
                 break;
-            case FTH_OP_DUMP:
-                for (int i = 0; i < garry_count(vm->stack); i++) {
-                    printf("[ ");
-                    fth_print_value(vm->stack[i]);
-                    printf(" ]");
+            case FTH_OP_PUSH:
+                if ((result = fth_stack_pop(vm, &value)) != FTH_OK) {
+                    vm->error = strdup("return stack underflow");
+                    return result;
                 }
-                printf("\n");
+                __stack_push(&vm->return_stack, value);
+                break;
+            case FTH_OP_POP:
+                if ((result = __stack_pop(&vm->return_stack, &value)) != FTH_OK) {
+                    vm->error = strdup("data stack underflow");
+                    return result;
+                }
+                fth_stack_push(vm, value);
+                break;
+            case FTH_OP_DUMP:
+                dump_stack(vm->stack);
+                break;
+            case FTH_OP_DUMP_RSTACK:
+                dump_stack(vm->return_stack);
                 break;
             default:
                 abort();
@@ -160,28 +204,19 @@ void fth_destroy(fth_vm *vm) {
 }
 
 void fth_stack_push(fth_vm *vm, fth_value value) {
-    garry_append(vm->stack, value);
+    __stack_push(&vm->stack, value);
 }
 
 fth_result_t fth_stack_pop(fth_vm *vm, fth_value *value) {
-    if (!garry_count(vm->stack)) {
-        if (value)
-            *value = fth_nil();
-        return FTH_RUNTIME_ERROR;
-    } else {
-        if (value)
-            *value = *(fth_value*)garry_last(vm->stack);
-        garry_pop(vm->stack);
-        return FTH_OK;
-    }
+    return __stack_pop(&vm->stack, value);
 }
 
 fth_result_t fth_stack_at(fth_vm *vm, int idx, fth_value *value) {
-    return FTH_OK;
+    return __stack_at(&vm->stack, idx, value);
 }
 
 fth_result_t fth_stack_peek(fth_vm *vm, int distance, fth_value *value) {
-    return FTH_OK;
+    return __stack_peek(&vm->stack, distance, value);
 }
 
 fth_result_t fth_exec(fth_vm *vm, const unsigned char *source) {
@@ -194,8 +229,9 @@ fth_result_t fth_exec(fth_vm *vm, const unsigned char *source) {
         result = FTH_COMPILE_ERROR;
         goto BAIL;
     }
+    chunk_disassemble(&chunk, "test");
     vm->chunk = &chunk;
-    vm->pc = vm->chunk->data;
+    vm->sp = vm->chunk->data;
     result = fth_run(vm);
 BAIL:
     chunk_free(&chunk);
