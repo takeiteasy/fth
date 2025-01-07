@@ -3,80 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include <assert.h>
 
-#define __garry_raw(a)           ((int*)(void*)(a)-2)
-#define __garry_m(a)             __garry_raw(a)[0]
-#define __garry_n(a)             __garry_raw(a)[1]
-#define __garry_needgrow(a,n)    ((a)==0 || __garry_n(a)+(n) >= __garry_m(a))
-#define __garry_maybegrow(a,n)   (__garry_needgrow(a,(n)) ? __garry_grow(a,n) : 0)
-#define __garry_grow(a,n)        (*((void **)&(a)) = __garry_growf((a), (n), sizeof(*(a))))
-#define __garry_needshrink(a)    (__garry_m(a) > 4 && __garry_n(a) <= __garry_m(a) / 4)
-#define __garry_maybeshrink(a)   (__garry_needshrink(a) ? __garry_shrink(a) : 0)
-#define __garry_shrink(a)        (*((void **)&(a)) = __garry_shrinkf((a), sizeof(*(a))))
-
-#define garry_free(a)           ((a) ? free(__garry_raw(a)),((a)=NULL) : 0)
-#define garry_append(a,v)       (__garry_maybegrow(a,1), (a)[__garry_n(a)++] = (v))
-#define garry_insert(a, idx, v) (__garry_maybegrow(a,1), memmove(&a[idx+1], &a[idx], (__garry_n(a)++ - idx) * sizeof(*(a))), a[idx] = (v))
-#define garry_push(a,v)         (garry_insert(a,0,v))
-#define garry_count(a)          ((a) ? __garry_n(a) : 0)
-#define garry_reserve(a,n)      (__garry_maybegrow(a,n), __garry_n(a)+=(n), &(a)[__garry_n(a)-(n)])
-#define garry_cdr(a)            (void*)(garry_count(a) > 1 ? &(a+1) : NULL)
-#define garry_car(a)            (void*)((a) ? &(a)[0] : NULL)
-#define garry_last(a)           (void*)((a) ? &(a)[__garry_n(a)-1] : NULL)
-#define garry_pop(a)            (--__garry_n(a), __garry_maybeshrink(a))
-#define garry_remove_at(a, idx) (idx == __garry_n(a)-1 ? memmove(&a[idx], &arr[idx+1], (--__garry_n(a) - idx) * sizeof(*(a))) : garry_pop(a), __garry_maybeshrink(a))
-#define garry_shift(a)          (garry_remove_at(a, 0))
-#define garry_clear(a)          ((a) ? (__garry_n(a) = 0) : 0, __garry_shrink(a))
-
-static void *__garry_growf(void *arr, int increment, int itemsize) {
-    int dbl_cur = arr ? 2 * __garry_m(arr) : 0;
-    int min_needed = garry_count(arr) + increment;
-    int m = dbl_cur > min_needed ? dbl_cur : min_needed;
-    int *p = realloc(arr ? __garry_raw(arr) : 0, itemsize * m + sizeof(int) * 2);
-    if (p) {
-        if (!arr)
-            p[1] = 0;
-        p[0] = m;
-        return p + 2;
-    }
-    return NULL;
-}
-
-static void *__garry_shrinkf(void *arr, int itemsize) {
-    int new_capacity = __garry_m(arr) / 2;
-    int *p = realloc(arr ? __garry_raw(arr) : 0, itemsize * new_capacity + sizeof(int) * 2);
-    if (p) {
-        p[0] = new_capacity;
-        return p + 2;
-    }
-    return NULL;
-}
-
-static char* __format(const char *fmt, size_t *size, va_list args) {
-    va_list _copy;
-    va_copy(_copy, args);
-    size_t _size = vsnprintf(NULL, 0, fmt, args);
-    va_end(_copy);
-    char *result = malloc(_size + 1);
-    if (!result)
-        return NULL;
-    vsnprintf(result, _size, fmt, args);
-    result[_size] = '\0';
-    if (size)
-        *size = _size;
-    return result;
-}
-
-static char* format(const char *fmt, size_t *size, ...) {
-    va_list args;
-    va_start(args, size);
-    size_t length;
-    char* result = __format(fmt, &length, args);
-    va_end(args);
-    if (size)
-        *size = length;
-    return result;
-}
+#include "utils.inl"
 
 fth_value fth_nil(void) {
     return (fth_value) {
@@ -114,25 +43,21 @@ void fth_obj_destroy(fth_object *obj) {
     switch (obj->type) {
         case FTH_OBJECT_STRING: {
             fth_string* string = (fth_string*)obj;
-            free(string->chars);
+            if (string->owns_chars)
+                free((char*)string->chars);
             free(string);
             break;
         }
     }
 }
 
-fth_string* fth_copy_string(const unsigned char *chars, int length) {
-    fth_string *result = malloc(sizeof(fth_string));
+fth_string* fth_string_new(const unsigned char *chars, int length, bool owns_chars) {
+    fth_string *result = malloc(sizeof(fth_string) + length + 1);
     result->obj.type = FTH_OBJECT_STRING;
-    if (!chars) {
-        result->chars = malloc(1);
-        result->chars[0] = '\0';
-        result->length = 0;
-    } else {
-        result->length = length ? length : (int)strlen((const char*)chars);
-        size_t size = length * sizeof(unsigned char);
-        result->chars = malloc(size + 1);
-        memcpy(result->chars, chars, size);
+    result->length = length;
+    if (chars && length) {
+        memcpy(result->chars, chars, length * sizeof(unsigned char));
+        result->chars[length] = '\0';
     }
     return result;
 }

@@ -61,7 +61,7 @@ static inline wchar_t peek(fth_parser *parser) {
 }
 
 static inline int is_eof(fth_parser *parser) {
-    return peek(parser) == L'\0';
+    return peek(parser) == '\0';
 }
 
 static inline void update_start(fth_parser *parser) {
@@ -72,7 +72,7 @@ static inline wchar_t advance(fth_parser *parser) {
     int l = ctowc(parser->cursor.ptr, NULL);
     parser->cursor.ptr += l;
     parser->cursor.ch_length = ctowc(parser->cursor.ptr, &parser->cursor.ch);
-    if (parser->cursor.ch == L'\n')
+    if (parser->cursor.ch == '\n')
         parser->line++;
     return parser->cursor.ch;
 }
@@ -85,7 +85,7 @@ static inline void advance_n(fth_parser *parser, int _n) {
 
 static inline wchar_t next(fth_parser *parser) {
     if (is_eof(parser))
-        return L'\0';
+        return '\0';
     wchar_t next;
     ctowc(parser->cursor.ptr + parser->cursor.ch_length, &next);
     return next;
@@ -96,18 +96,18 @@ static void skip_line(fth_parser *parser) {
         if (is_eof(parser))
             return;
         switch (peek(parser)) {
-            case L'\r':
+            case '\r':
                 switch (next(parser)) {
-                    case L'\n':
+                    case '\n':
                         advance(parser);
-                    case L'\0':
+                    case '\0':
                         advance(parser);
                         return;
                     default:
                         break;
                 }
                 break;
-            case L'\n':
+            case '\n':
                 advance(parser);
                 return;
         }
@@ -120,15 +120,15 @@ static void skip_whitespace(fth_parser *parser) {
         if (is_eof(parser))
             return;
         switch (peek(parser)) {
-            case L'#':
+            case '#':
                 skip_line(parser);
                 break;
-            case L' ':
-            case L'\t':
-            case L'\v':
-            case L'\r':
-            case L'\n':
-            case L'\f':
+            case ' ':
+            case '\t':
+            case '\v':
+            case '\r':
+            case '\n':
+            case '\f':
                 advance(parser);
                 break;
             default:
@@ -151,20 +151,20 @@ static fth_token read_atom(fth_parser *parser) {
         if (is_eof(parser))
             goto BREAK;
         switch (peek(parser)) {
-            case L'#':
-            case L' ':
-            case L'\t':
-            case L'\v':
-            case L'\r':
-            case L'\n':
-            case L'\f':
-            case L'(':
-            case L')':
-            case L'[':
-            case L']':
-            case L'{':
-            case L'}':
-            case L';':
+            case '#':
+            case ' ':
+            case '\t':
+            case '\v':
+            case '\r':
+            case '\n':
+            case '\f':
+            case '(':
+            case ')':
+            case '[':
+            case ']':
+            case '{':
+            case '}':
+            case ';':
                 goto BREAK;
             default:
                 advance(parser);
@@ -181,10 +181,10 @@ static fth_token read_number(fth_parser *parser) {
         if (is_eof(parser))
             break;
         switch (peek(parser)) {
-            case L'0' ... L'9':
+            case '0' ... '9':
                 advance(parser);
                 break;
-            case L'.':
+            case '.':
                 if (is_float) {
                     parser->error = "unexpected second '.' in number literal";
                     return fth_token_make(parser, FTH_TOKEN_ERROR);
@@ -223,26 +223,27 @@ static fth_token read_string(fth_parser *parser) {
 static fth_token next_token(fth_parser *parser) {
     if (is_eof(parser))
         return fth_token_make(parser, FTH_TOKEN_EOF);
+    update_start(parser);
     switch (peek(parser)) {
-        case L' ':
-        case L'\t':
-        case L'\v':
-        case L'\r':
-        case L'\n':
-        case L'\f':
+        case ' ':
+        case '\t':
+        case '\v':
+        case '\r':
+        case '\n':
+        case '\f':
             skip_whitespace(parser);
             update_start(parser);
             return next_token(parser);
-        case L'#':
+        case '#':
             skip_line(parser);
             update_start(parser);
             return next_token(parser);
-        case L'0' ... L'9':
+        case '0' ... '9':
             return read_number(parser);
-        case L'"':
+        case '"':
             return read_string(parser);
-        case L'.':;
-            if (next(parser) == L'$') {
+        case '.':;
+            if (next(parser) == '$') {
                 advance_n(parser, 2);
                 return fth_token_make(parser, FTH_TOKEN_DUMP);
             } else {
@@ -334,6 +335,7 @@ static void emit_integer(fth_parser *parser, fth_chunk *chunk) {
 static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
     for (;;) {
         parser->current = next_token(parser);
+        fth_print_token(&parser->current);
         switch (parser->current.type) {
             case FTH_TOKEN_EOF:
                 emit(parser, chunk, FTH_TOKEN_EOF);
@@ -342,7 +344,7 @@ static fth_result_t fth_compile(fth_parser *parser, fth_chunk *chunk) {
             case FTH_TOKEN_ATOM:
                 break;
             case FTH_TOKEN_STRING:
-                emit_constant(parser, chunk, fth_obj(fth_copy_string(parser->current.begin, parser->current.length)));
+                emit_constant(parser, chunk, fth_obj(fth_string_new(parser->current.begin, parser->current.length, false)));
                 break;
             case FTH_TOKEN_NUMBER:
                 emit_number(parser, chunk);

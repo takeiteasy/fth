@@ -55,13 +55,14 @@ typedef struct fth_object {
 typedef struct {
     fth_object obj;
     int length;
-    unsigned char *chars;
+    bool owns_chars;
+    unsigned char chars[];
 } fth_string;
 
 bool fth_object_is(fth_value value, fth_object_t type);
 fth_object* fth_obj_new(fth_object_t type, size_t size);
 void fth_obj_destroy(fth_object *obj);
-fth_string* fth_copy_string(const unsigned char *str, int length);
+fth_string* fth_string_new(const unsigned char *str, int length, bool owns_chars);
 #define fth_is_string(VAL) (fth_object_is((VAL), FTH_OBJECT_STRING))
 #define fth_as_string(VAL) ((fth_string*)fth_as_obj((VAL)))
 #define fth_as_cstring(VAL) ((fth_as_string((VAL)))->chars)
